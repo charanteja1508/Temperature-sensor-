@@ -1,0 +1,163 @@
+8051 Temperature Monitoring System
+ * MCU: AT89C51
+ * Compiler: Keil C51
+ * Sensor: LM35 -> ADC0804 -> Port 1
+ * Display: HD44780-compatible 16x2 LCD, 4-bit mode
+ *
+ * ADC0804 control:
+ *   CS   -> GND
+ *   RD   -> P3.7
+ *   WR   -> P3.6
+ *   INTR -> P3.2
+ *   D0-D7 -> P1.0-P1.7
+ *
+ * LCD:
+ *   RS=P2.0, E=P2.1, D4-D7=P2.4-P2.7, RW=GND
+ */
+
+#include <REGX51.H>
+
+sbit LCD_RS = P2^0;
+sbit LCD_EN = P2^1;
+sbit ADC_RD = P3^7;
+sbit ADC_WR = P3^6;
+sbit ADC_INTR = P3^2;
+
+#define LCD_DATA P2
+#define ADC_DATA P1
+
+void delay_ms(unsigned int ms)
+{
+    unsigned int i, j;
+    for (i = 0; i < ms; i++)
+        for (j = 0; j < 123; j++); /* Approximate for 11.0592 MHz; tune if needed */
+}
+
+void lcd_pulse(void)
+{
+    LCD_EN = 1;
+    delay_ms(1);
+    LCD_EN = 0;
+    delay_ms(1);
+}
+
+void lcd_nibble(unsigned char nibble)
+{
+    /* Preserve P2.0 (RS) and P2.1 (EN); put nibble on P2.4-P2.7. */
+    LCD_DATA = (LCD_DATA & 0x0F) | (nibble & 0xF0);
+    lcd_pulse();
+}
+
+void lcd_cmd(unsigned char cmd)
+{
+    LCD_RS = 0;
+    lcd_nibble(cmd & 0xF0);
+    lcd_nibble((cmd << 4) & 0xF0);
+    delay_ms(2);
+}
+
+void lcd_data(unsigned char dat)
+{
+    LCD_RS = 1;
+    lcd_nibble(dat & 0xF0);
+    lcd_nibble((dat << 4) & 0xF0);
+    delay_ms(2);
+    LCD_RS = 0;
+}
+
+void lcd_string(char *s)
+{
+    while (*s)
+        lcd_data(*s++);
+}
+
+void lcd_init(void)
+{
+    delay_ms(20);
+    LCD_RS = 0;
+    LCD_EN = 0;
+
+    /* Standard 4-bit LCD initialization sequence. */
+    lcd_nibble(0x30);
+    delay_ms(5);
+    lcd_nibble(0x30);
+    delay_ms(2);
+    lcd_nibble(0x30);
+    delay_ms(2);
+    lcd_nibble(0x20);
+    delay_ms(2);
+
+    lcd_cmd(0x28); /* 4-bit, 2 lines, 5x8 font */
+    lcd_cmd(0x0C); /* Display ON, cursor OFF */
+    lcd_cmd(0x06); /* Increment cursor */
+    lcd_cmd(0x01); /* Clear display */
+    delay_ms(2);
+}
+
+unsigned char adc_read(void)
+{
+    unsigned char value;
+
+    ADC_RD = 1;
+    ADC_WR = 1;
+
+    ADC_WR = 0;       /* Start conversion pulse */
+    delay_ms(1);
+    ADC_WR = 1;
+
+    while (ADC_INTR == 1); /* Wait until conversion completes */
+
+    ADC_RD = 0;
+    value = ADC_DATA;
+    ADC_RD = 1;
+
+    return value;
+}
+
+void lcd_print_temperature(unsigned int temp_c)
+{
+    lcd_cmd(0x80);
+    lcd_string("Temperature:    ");
+
+    lcd_cmd(0xC0);
+    lcd_string("                ");
+    lcd_cmd(0xC0);
+
+    lcd_data((temp_c / 100) ? ('0' + (temp_c / 100) % 10) : ' ');
+    lcd_data('0' + (temp_c / 10) % 10);
+    lcd_data('0' + temp_c % 10);
+    lcd_string(" C");
+}
+
+void main(void)
+{
+    unsigned char adc_value;
+    unsigned int temperature_c;
+
+    P1 = 0xFF;      /* Port 1 used as ADC input */
+    ADC_RD = 1;
+    ADC_WR = 1;
+
+    lcd_init();
+    lcd_cmd(0x80);
+    lcd_string("8051 Temp Meter");
+    lcd_cmd(0xC0);
+    lcd_string("Starting...");
+    delay_ms(1000);
+
+    while (1)
+    {
+        adc_value = adc_read();
+
+        /*
+         * LM35: 10 mV/°C.
+         * ADC step ~ 5 V / 256 = 19.531 mV.
+         * Temperature ~= ADC count * 1.953.
+         * Rounded integer approximation: (count * 195 + 50) / 100.
+         */
+        temperature_c = ((unsigned int)adc_value * 195 + 50) / 100;
+        lcd_print_temperature(temperature_c);
+
+        delay_ms(500);
+    }
+}
